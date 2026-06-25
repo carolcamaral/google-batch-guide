@@ -96,7 +96,7 @@ gcloud batch tasks describe 0 \
 **Solutions:**
 - Check if the container image exists:
   ```bash
-  gcloud container images list --repository=quay.io/biocontainers 2>&1 | grep xtea
+  gcloud container images list --repository=quay.io/biocontainers 2>&1 | grep samtools
   ```
 - If pulling from quay.io, it should succeed (quay.io is VPC SC allowed)
 - If using docker.io, the pull will hang because it's VPC SC blocked
@@ -112,7 +112,7 @@ gcloud batch tasks describe 0 \
 **Check logs:**
 ```bash
 # Find the latest checkpoint log
-gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/xtea_SAMPLE_*.txt | sort | tail -1)
+gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/worker_SAMPLE_*.txt | sort | tail -1)
 
 # Or view all Cloud Logging logs
 gcloud logging read "resource.type=batch.googleapis.com AND labels.job_id=<JOB_ID>" --limit=100
@@ -140,9 +140,9 @@ gcloud logging read "resource.type=batch.googleapis.com AND labels.job_id=<JOB_I
 **Solution:** Edit worker script to check for expected output before exiting 0:
 ```python
 # At the end of worker.py, before sys.exit(0):
-expected_vcf = WORK_DIR / "output.vcf"
-if not expected_vcf.exists():
-    log("ERROR: No VCF produced")
+expected_output = WORK_DIR / f"{SAMPLE_ID}.stats.txt"
+if not expected_output.exists() or expected_output.stat().st_size == 0:
+    log("ERROR: No output produced")
     sys.exit(1)
 ```
 
@@ -205,7 +205,7 @@ gcs_download(
 )
 ```
 
-This is already in `xtea_worker.py` — ensure your adaptation includes it.
+This is already in `worker_template.py` — ensure your adaptation includes it.
 
 ---
 
@@ -243,7 +243,7 @@ gcloud logging read "resource.labels.job_id=<JOB_ID>" --limit=100
 
 **Check:**
 ```bash
-gcloud container images list-tags quay.io/biocontainers/xtea
+gcloud container images list-tags quay.io/biocontainers/samtools
 ```
 
 **Solutions:**
@@ -311,4 +311,3 @@ gcloud container images list-tags quay.io/biocontainers/xtea
 | Memory exceeded | Tool too large for VM | Increase VM size or reduce parallelism |
 | Disk full | Output files large | Increase bootDisk.sizeGb |
 | Logs missing | Worker crashed before upload | Wrap upload in try/except |
-
