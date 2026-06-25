@@ -115,7 +115,23 @@ def create_batch_config(
         f"{_ws_bucket}/o/{_encoded_obj}?alt=media"
     )
     
-    worker_download = f"""python -c "import urllib.request,urllib.parse,json; req=urllib.request.Request('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',headers={{'Metadata-Flavor':'Google'}}); token=json.loads(urllib.request.urlopen(req,timeout=10).read())['access_token']; url='{worker_url}'; req2=urllib.request.Request(url,headers={{'Authorization':'Bearer '+token}}); open('/tmp/worker.py','wb').write(urllib.request.urlopen(req2,timeout=30).read())" && python /tmp/worker.py"""
+    # Resolve a Python interpreter at runtime: some container images ship
+    # `python3` but not `python` (e.g. biocontainers), so cracking `python`
+    # directly fails with exit code 127 ("command not found"). PY picks
+    # whichever exists, and we use it both to download and to run the worker.
+    py_bootstrap = (
+        "import urllib.request,urllib.parse,json; "
+        "req=urllib.request.Request('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',headers={'Metadata-Flavor':'Google'}); "
+        "token=json.loads(urllib.request.urlopen(req,timeout=10).read())['access_token']; "
+        f"url='{worker_url}'; "
+        "req2=urllib.request.Request(url,headers={'Authorization':'Bearer '+token}); "
+        "open('/tmp/worker.py','wb').write(urllib.request.urlopen(req2,timeout=30).read())"
+    )
+    worker_download = (
+        'PY=$(command -v python3 || command -v python); '
+        'if [ -z "$PY" ]; then echo "ERROR: no python interpreter found in container" >&2; exit 127; fi; '
+        f'"$PY" -c "{py_bootstrap}" && "$PY" /tmp/worker.py'
+    )
     
     # Build config
     config = {
