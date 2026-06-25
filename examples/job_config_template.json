@@ -5,7 +5,7 @@
         "runnables": [
           {
             "container": {
-              "imageUri": "quay.io/biocontainers/xtea:0.1.9--hdfd78af_0",
+              "imageUri": "quay.io/biocontainers/samtools:1.19.2--h50ea8bc_0",
               "entrypoint": "/bin/bash",
               "commands": [
                 "-c",
@@ -18,7 +18,6 @@
           "variables": {
             "SAMPLE_ID": "SAMPLE_001",
             "CRAM_PATH": "gs://<YOUR_BUCKET_NAME>/input/SAMPLE_001/SAMPLE_001.cram",
-            "CRAI_PATH": "gs://<YOUR_BUCKET_NAME>/input/SAMPLE_001/SAMPLE_001.cram.crai",
             "GOOGLE_CLOUD_PROJECT": "<YOUR_PROJECT_ID>"
           }
         },
