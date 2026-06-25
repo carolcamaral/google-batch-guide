@@ -2,21 +2,42 @@
 """
 submit_batch_job.py
 
-Helper script to submit Google Batch jobs without manually crafting JSON.
+Generic helper script to submit Google Batch jobs without manually crafting JSON.
+Works with any containerized workflow (xTea, GATK, bcftools, custom pipelines, etc).
 
-Usage:
-    python submit_batch_job.py \
-      --project <YOUR_PROJECT_ID> \
-      --region <YOUR_REGION> \
-      --sample-id SAMPLE_001 \
-      --cram-path gs://<YOUR_BUCKET>/input/SAMPLE_001/SAMPLE_001.cram \
-      --repeat-type Alu
+Usage examples:
+
+  # Basic: submit a job with default settings
+  python submit_batch_job.py \
+    --project my-project \
+    --sample-id SAMPLE_001 \
+    --image quay.io/biocontainers/xtea:0.1.9--hdfd78af_0 \
+    --worker-script gs://my-bucket/scripts/worker.py
+
+  # With custom environment variables
+  python submit_batch_job.py \
+    --project my-project \
+    --sample-id SAMPLE_001 \
+    --image quay.io/biocontainers/gatk:4.3.0.0 \
+    --worker-script gs://my-bucket/scripts/gatk_worker.py \
+    --env SAMPLE_ID=SAMPLE_001 \
+    --env REF_GENOME=gs://my-bucket/ref/hg38.fasta
+
+  # With custom VM size and time
+  python submit_batch_job.py \
+    --project my-project \
+    --sample-id SAMPLE_001 \
+    --image gcr.io/custom/my-tool:latest \
+    --worker-script gs://my-bucket/scripts/worker.py \
+    --cpus 8 \
+    --memory-gb 64 \
+    --max-duration 7200
 
 The script will:
   1. Generate a unique job name (no underscores)
   2. Create a JSON config with your parameters
   3. Submit to Google Batch
-  4. Print the job name and monitoring commands
+  4. Print monitoring commands
 """
 
 import json
@@ -24,11 +45,10 @@ import subprocess
 import sys
 import argparse
 from datetime import datetime
-from pathlib import Path
 
 
 def sanitize_job_name(name):
-    """Remove underscores and ensure valid Batch job name."""
+    """Remove invalid characters from job name (Batch only accepts [a-z0-9-])."""
     name = name.replace("_", "-")
     name = "".join(c for c in name if c.isalnum() or c == "-")
     name = name.lower()
@@ -39,9 +59,9 @@ def create_batch_config(
     project_id,
     region,
     sample_id,
-    cram_path,
-    crai_path=None,
-    repeat_type=None,
+    image_uri,
+    worker_script,
+    env_vars=None,
     bucket_name=None,
     cpu_count=16,
     memory_gb=120,
@@ -51,20 +71,20 @@ def create_batch_config(
     network_name=None,
     subnetwork_name=None,
 ):
-    """Generate a Google Batch job configuration."""
+    """Generate a Google Batch job configuration (generic, tool-agnostic)."""
     
-    if crai_path is None:
-        crai_path = cram_path + ".crai"
+    if env_vars is None:
+        env_vars = {}
     
     if bucket_name is None:
-        # Try to infer from CRAM path
-        if cram_path.startswith("gs://"):
-            bucket_name = cram_path[5:].split("/")[0]
+        # Try to infer from worker script path
+        if worker_script.startswith("gs://"):
+            bucket_name = worker_script[5:].split("/")[0]
         else:
             bucket_name = "<YOUR_BUCKET_NAME>"
     
     if service_account_email is None:
-        service_account_email = f"<YOUR_SERVICE_ACCOUNT_EMAIL>"
+        service_account_email = "<YOUR_SERVICE_ACCOUNT_EMAIL>"
     
     if network_name is None:
         network_name = "<YOUR_NETWORK_NAME>"
@@ -72,19 +92,15 @@ def create_batch_config(
     if subnetwork_name is None:
         subnetwork_name = "<YOUR_SUBNETWORK_NAME>"
     
-    # Environment variables
+    # Always include SAMPLE_ID and PROJECT
     env_vars = {
         "SAMPLE_ID": sample_id,
-        "CRAM_PATH": cram_path,
-        "CRAI_PATH": crai_path,
         "GOOGLE_CLOUD_PROJECT": project_id,
+        **env_vars  # User-provided vars override defaults
     }
     
-    if repeat_type:
-        env_vars["REPEAT_TYPE"] = repeat_type
-    
-    # Worker download command
-    worker_url = f"https://storage.googleapis.com/download/storage/v1/b/{bucket_name}/o/scripts%2Fworker.py?alt=media"
+    # Worker download command (generic)
+    worker_url = worker_script.replace("gs://", "https://storage.googleapis.com/download/storage/v1/b/").replace("/", "/o/", 1) + "?alt=media"
     
     worker_download = f"""python -c "import urllib.request,urllib.parse,json; req=urllib.request.Request('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',headers={{'Metadata-Flavor':'Google'}}); token=json.loads(urllib.request.urlopen(req,timeout=10).read())['access_token']; url='{worker_url}'; req2=urllib.request.Request(url,headers={{'Authorization':'Bearer '+token}}); open('/tmp/worker.py','wb').write(urllib.request.urlopen(req2,timeout=30).read())" && python /tmp/worker.py"""
     
@@ -96,7 +112,7 @@ def create_batch_config(
                     "runnables": [
                         {
                             "container": {
-                                "imageUri": "quay.io/biocontainers/xtea:0.1.9--hdfd78af_0",
+                                "imageUri": image_uri,
                                 "entrypoint": "/bin/bash",
                                 "commands": ["-c", worker_download],
                             }
@@ -175,7 +191,7 @@ def submit_job(project_id, region, job_name, config):
         print(f"    --format='value(status.state)'")
         print()
         print(f"  # View logs (checkpoints every 10 min)")
-        print(f"  gsutil cat $(gsutil ls gs://{config['allocationPolicy']['serviceAccount']['email'].split('@')[0]}*/logs/* | tail -1)")
+        print(f"  gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/* | grep {job_name} | tail -1)")
         print()
         return 0
     else:
@@ -186,17 +202,38 @@ def submit_job(project_id, region, job_name, config):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Submit a Google Batch job for containerized workflows"
+        description="Submit a Google Batch job for any containerized workflow",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+
+  # xTea job
+  python submit_batch_job.py \\
+    --project my-project \\
+    --sample-id SAMPLE_001 \\
+    --image quay.io/biocontainers/xtea:0.1.9--hdfd78af_0 \\
+    --worker-script gs://my-bucket/scripts/xtea_worker.py \\
+    --env REPEAT_TYPE=Alu
+
+  # GATK job (custom environment)
+  python submit_batch_job.py \\
+    --project my-project \\
+    --sample-id SAMPLE_001 \\
+    --image broadinstitute/gatk:4.3.0.0 \\
+    --worker-script gs://my-bucket/scripts/gatk_worker.py \\
+    --env BAM_PATH=gs://my-bucket/input/sample.bam \\
+    --env REF_GENOME=gs://my-bucket/ref/hg38.fasta
+        """
     )
     
     parser.add_argument("--project", required=True, help="Google Cloud project ID")
-    parser.add_argument("--region", default="europe-west4", help="GCP region")
+    parser.add_argument("--region", default="europe-west4", help="GCP region (default: europe-west4)")
     parser.add_argument("--sample-id", required=True, help="Sample identifier")
-    parser.add_argument("--cram-path", required=True, help="GCS path to CRAM file")
-    parser.add_argument("--crai-path", default=None, help="GCS path to CRAM index (default: CRAM_PATH.crai)")
-    parser.add_argument("--repeat-type", default=None, help="TE type (Alu, L1, SVA, HERV)")
-    parser.add_argument("--bucket", default=None, help="GCS bucket name")
-    parser.add_argument("--cpus", type=int, default=16, help="vCPUs (default: 16)")
+    parser.add_argument("--image", required=True, help="Container image URI (e.g., quay.io/biocontainers/xtea:0.1.9)")
+    parser.add_argument("--worker-script", required=True, help="GCS path to worker script (e.g., gs://bucket/scripts/worker.py)")
+    parser.add_argument("--env", action="append", default=[], help="Environment variable as KEY=VALUE (can be repeated)")
+    parser.add_argument("--bucket", default=None, help="GCS bucket name (inferred from worker-script if not provided)")
+    parser.add_argument("--cpus", type=int, default=16, help="Number of vCPUs (default: 16)")
     parser.add_argument("--memory-gb", type=int, default=120, help="RAM in GB (default: 120)")
     parser.add_argument("--disk-gb", type=int, default=200, help="Boot disk in GB (default: 200)")
     parser.add_argument("--max-duration", type=int, default=36000, help="Max run time in seconds (default: 36000 = 10h)")
@@ -207,11 +244,17 @@ def main():
     
     args = parser.parse_args()
     
-    # Generate job name
-    base_name = f"xtea-{args.sample_id}"
-    if args.repeat_type:
-        base_name += f"-{args.repeat_type}"
-    base_name += f"-{int(datetime.now().timestamp())}"
+    # Parse environment variables
+    env_dict = {}
+    for env_arg in args.env:
+        if "=" not in env_arg:
+            print(f"ERROR: Environment variable format must be KEY=VALUE, got: {env_arg}")
+            sys.exit(1)
+        key, value = env_arg.split("=", 1)
+        env_dict[key] = value
+    
+    # Generate job name (generic, based on sample ID and timestamp)
+    base_name = f"batch-{args.sample_id}-{int(datetime.now().timestamp())}"
     job_name = sanitize_job_name(base_name)
     
     # Create config
@@ -219,9 +262,9 @@ def main():
         project_id=args.project,
         region=args.region,
         sample_id=args.sample_id,
-        cram_path=args.cram_path,
-        crai_path=args.crai_path,
-        repeat_type=args.repeat_type,
+        image_uri=args.image,
+        worker_script=args.worker_script,
+        env_vars=env_dict,
         bucket_name=args.bucket,
         cpu_count=args.cpus,
         memory_gb=args.memory_gb,
