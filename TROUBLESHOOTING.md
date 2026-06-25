@@ -273,70 +273,7 @@ gcloud container images list-tags quay.io/biocontainers/xtea
 - `sort: unknown sort type -V` → container sort doesn't support version sort
 - `curl: command not found` → use Python urllib instead
 
-**Solution:** Use `quay.io/biocontainers/*` images (they're larger but have standard tools).
-
----
-
-## Performance
-
-### Job takes much longer than expected
-
-**Causes:**
-- CRAM has high clipped-read diversity → alignment step takes hours
-- `-n 1` (single-threaded) instead of `-n 8` (parallel)
-- Reference files too large or slow to download
-- Network I/O bottleneck (requester-pays bucket)
-
-**Check:**
-```bash
-# From checkpoint logs
-gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/worker_*.txt | tail -1) | grep "STEP"
-```
-
-Look for which step is slow.
-
-**Fixes:**
-- Increase maxRunDuration (if the tool is legitimately slow)
-- Use `-n 8` or more threads
-- Pre-cache reference files (mount from a local persistent disk, if available)
-- Move input CRAMs to a non-requester-pays bucket
-
----
-
-### High memory usage / OOM kills
-
-**Problem:** Job reaches 128 GB RAM limit and OOM killer terminates it.
-
-**Check:** From checkpoint logs, look for `free -h` output or kernel messages.
-
-**Solutions:**
-- The tool legitimately needs >128 GB → no solution (would need a larger VM, but e2 maxes at 416 GB and is expensive)
-- Tool has a memory leak → update tool or add a workaround
-- Reduce parallelism (e.g., `-n 4` instead of `-n 8`)
-
----
-
-## Costs
-
-### Unexpectedly high bill
-
-**Check:**
-```bash
-gcloud billing accounts list
-gcloud billing budgets list --billing-account=<BILLING_ACCOUNT_ID>
-gcloud billing accounts get-iam-policy <BILLING_ACCOUNT_ID>
-```
-
-**Common causes:**
-- Many jobs running in parallel (10+ at once = lots of VM hours)
-- Long max run duration (36000s = 10h, job runs for max time even if idle)
-- Large VM size (e2-highmem-16 is expensive; use e2-standard if RAM allows)
-
-**Mitigations:**
-- Reduce maxRunDuration to ~5 hours if your tool typically finishes faster
-- Consolidate TE types (4 jobs → 1 job per sample)
-- Use spot VMs (but job can be preempted)
-- Delete old outputs (VCF only, delete intermediates)
+**Solution:** Use `quay.io/biocontainers/*` images (they're larger but have standard tools)
 
 ---
 
@@ -359,8 +296,6 @@ gcloud billing accounts get-iam-policy <BILLING_ACCOUNT_ID>
    gcloud compute ssh INSTANCE_NAME --zone=<ZONE>
    # Poke around in /tmp/work/, check processes, etc.
    ```
-
-4. **Contact GCP support** (if you have a support plan)
 
 ---
 
