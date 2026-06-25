@@ -36,11 +36,10 @@ dsub \
   --user-project "${PROJECT}" \
   --image mirror.gcr.io/library/python:3.11-slim \
   --input CRAM="${CRAM}" \
+  --input SCRIPT="gs://${BUCKET}/scripts/inspect_cram.py" \
   --output OUT="gs://${BUCKET}/output/${SAMPLE_ID}/report.txt" \
   --env SAMPLE_ID="${SAMPLE_ID}" \
-  --input SCRIPT="gs://${BUCKET}/scripts/inspect_cram.py" \
-  --command 'INPUT_PATH="${CRAM}" OUTPUT_PATH="${OUT}" python "${SCRIPT}"' \
-  --wait
+  --command 'export INPUT_PATH="${CRAM}"; export OUTPUT_PATH="${OUT}"; python "${SCRIPT}"' 
 
 echo
 echo "Done. Read the report with:"
