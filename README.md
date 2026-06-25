@@ -88,8 +88,8 @@ wb workspace describe         # look at the "Google project:" line
 # or, if it's already set:
 gcloud config get-value project
 ```
-Example: `wb-lukewarm-blueberry-5144`. (A name like
-`transposable-elements-gp2-gcp` is the *workspace*, not a project ID, and will
+Example: `wb-nice-fruitsalad-123`. (A name like
+`my-project-gp2-gcp` is the *workspace*, not a project ID, and will
 not work as `--project`.)
 
 **Service account (the "pet" SA)** — already active on the VM:
@@ -97,7 +97,7 @@ not work as `--project`.)
 ```bash
 gcloud auth list              # the ACTIVE pet-...@<project>.iam.gserviceaccount.com
 ```
-Example: `pet-2771...@wb-lukewarm-blueberry-5144.iam.gserviceaccount.com`.
+Example: `pet-2771...@wb-nice-fruitsalad-123.iam.gserviceaccount.com`.
 
 **Region** — your workspace's default location:
 
