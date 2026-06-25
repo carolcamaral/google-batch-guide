@@ -7,21 +7,20 @@ Works with any containerized workflow (xTea, GATK, bcftools, custom pipelines, e
 
 Usage examples:
 
-  # Basic: submit a job with default settings
+  # Basic: submit a job with default settings (samtools stats example)
   python submit_batch_job.py \
     --project my-project \
     --sample-id SAMPLE_001 \
-    --image quay.io/biocontainers/xtea:0.1.9--hdfd78af_0 \
+    --image quay.io/biocontainers/samtools:1.19.2--h50ea8bc_0 \
     --worker-script gs://my-bucket/scripts/worker.py
 
-  # With custom environment variables
+  # With custom environment variables (point at a specific CRAM)
   python submit_batch_job.py \
     --project my-project \
     --sample-id SAMPLE_001 \
-    --image quay.io/biocontainers/gatk:4.3.0.0 \
-    --worker-script gs://my-bucket/scripts/gatk_worker.py \
-    --env SAMPLE_ID=SAMPLE_001 \
-    --env REF_GENOME=gs://my-bucket/ref/hg38.fasta
+    --image quay.io/biocontainers/samtools:1.19.2--h50ea8bc_0 \
+    --worker-script gs://my-bucket/scripts/worker.py \
+    --env CRAM_PATH=gs://my-bucket/input/SAMPLE_001/SAMPLE_001.cram
 
   # With custom VM size and time
   python submit_batch_job.py \
@@ -44,6 +43,7 @@ import json
 import subprocess
 import sys
 import argparse
+import urllib.parse
 from datetime import datetime
 
 
@@ -100,7 +100,20 @@ def create_batch_config(
     }
     
     # Worker download command (generic)
-    worker_url = worker_script.replace("gs://", "https://storage.googleapis.com/download/storage/v1/b/").replace("/", "/o/", 1) + "?alt=media"
+    # Build the GCS JSON-API "media download" URL correctly:
+    #   gs://bucket/path/to/worker.py
+    #     -> https://storage.googleapis.com/download/storage/v1/b/<bucket>/o/<url-encoded-object>?alt=media
+    # The object path must be URL-encoded (slashes become %2F).
+    if not worker_script.startswith("gs://"):
+        print(f"ERROR: --worker-script must be a gs:// path, got: {worker_script}")
+        sys.exit(1)
+    _ws = worker_script[len("gs://"):]
+    _ws_bucket, _ws_obj = _ws.split("/", 1)
+    _encoded_obj = urllib.parse.quote(_ws_obj, safe="")
+    worker_url = (
+        f"https://storage.googleapis.com/download/storage/v1/b/"
+        f"{_ws_bucket}/o/{_encoded_obj}?alt=media"
+    )
     
     worker_download = f"""python -c "import urllib.request,urllib.parse,json; req=urllib.request.Request('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',headers={{'Metadata-Flavor':'Google'}}); token=json.loads(urllib.request.urlopen(req,timeout=10).read())['access_token']; url='{worker_url}'; req2=urllib.request.Request(url,headers={{'Authorization':'Bearer '+token}}); open('/tmp/worker.py','wb').write(urllib.request.urlopen(req2,timeout=30).read())" && python /tmp/worker.py"""
     
@@ -207,29 +220,29 @@ def main():
         epilog="""
 Examples:
 
-  # xTea job
+  # samtools stats job (the simple built-in example)
   python submit_batch_job.py \\
     --project my-project \\
     --sample-id SAMPLE_001 \\
-    --image quay.io/biocontainers/xtea:0.1.9--hdfd78af_0 \\
-    --worker-script gs://my-bucket/scripts/xtea_worker.py \\
-    --env REPEAT_TYPE=Alu
+    --image quay.io/biocontainers/samtools:1.19.2--h50ea8bc_0 \\
+    --worker-script gs://my-bucket/scripts/worker.py \\
+    --env CRAM_PATH=gs://my-bucket/input/SAMPLE_001/SAMPLE_001.cram
 
-  # GATK job (custom environment)
+  # same, but also compute `samtools stats` (needs a reference FASTA)
   python submit_batch_job.py \\
     --project my-project \\
     --sample-id SAMPLE_001 \\
-    --image broadinstitute/gatk:4.3.0.0 \\
-    --worker-script gs://my-bucket/scripts/gatk_worker.py \\
-    --env BAM_PATH=gs://my-bucket/input/sample.bam \\
-    --env REF_GENOME=gs://my-bucket/ref/hg38.fasta
+    --image quay.io/biocontainers/samtools:1.19.2--h50ea8bc_0 \\
+    --worker-script gs://my-bucket/scripts/worker.py \\
+    --env CRAM_PATH=gs://my-bucket/input/SAMPLE_001/SAMPLE_001.cram \\
+    --env REF_PATH=gs://my-bucket/ref/Homo_sapiens_assembly38.fasta
         """
     )
     
     parser.add_argument("--project", required=True, help="Google Cloud project ID")
     parser.add_argument("--region", default="europe-west4", help="GCP region (default: europe-west4)")
     parser.add_argument("--sample-id", required=True, help="Sample identifier")
-    parser.add_argument("--image", required=True, help="Container image URI (e.g., quay.io/biocontainers/xtea:0.1.9)")
+    parser.add_argument("--image", required=True, help="Container image URI (e.g., quay.io/biocontainers/samtools:1.19.2--h50ea8bc_0)")
     parser.add_argument("--worker-script", required=True, help="GCS path to worker script (e.g., gs://bucket/scripts/worker.py)")
     parser.add_argument("--env", action="append", default=[], help="Environment variable as KEY=VALUE (can be repeated)")
     parser.add_argument("--bucket", default=None, help="GCS bucket name (inferred from worker-script if not provided)")
