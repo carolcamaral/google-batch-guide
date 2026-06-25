@@ -184,7 +184,7 @@ Copy `examples/job_config_template.json` and customize:
         "memoryMib": "122880"
       },
       "maxRetryCount": 0,
-      "maxRunDuration": "36000s"
+      "maxRunDuration": "18000s"
     },
     "taskCount": 1
   }],
@@ -209,11 +209,11 @@ Copy `examples/job_config_template.json` and customize:
 }
 ```
 
-Key fields:
-- `cpuMilli`: 16000 = 16 vCPUs (for xTea with `-n 8`, keep this)
-- `memoryMib`: 122880 = 120 GB RAM (xTea consensus step needs ~100 GB minimum)
-- `bootDisk`: 200 GB (CRAM ~12 GB + ref ~15 GB + tmp ~30 GB + buffer)
-- `maxRunDuration`: 36000s = 10 hours (adjust based on your tool; xTea = 30 min to 5 h depending on sample)
+Key fields (adjust as necessary):
+- `cpuMilli`: 16000 = 16 vCPUs 
+- `memoryMib`: 122880 = 120 GB RAM
+- `bootDisk`: 200 GB
+- `maxRunDuration`: 18000s = 5 hours (adjust based on your tool)
 - `noExternalIpAddress`: true (required for VPC SC)
 
 ---
@@ -223,7 +223,7 @@ Key fields:
 ### Option A: Via gcloud CLI (manual)
 
 ```bash
-JOB_NAME="xtea-sample-001-alu-$(date +%s)"
+JOB_NAME="my-job-sample-001-$(date +%s)"
 
 gcloud batch jobs submit "${JOB_NAME}" \
   --project=<YOUR_PROJECT_ID> \
@@ -238,8 +238,12 @@ python scripts/submit_batch_job.py \
   --project <YOUR_PROJECT_ID> \
   --region <YOUR_REGION> \
   --sample-id SAMPLE_001 \
-  --repeat-type Alu \
-  --cram-path gs://<YOUR_BUCKET>/input/SAMPLE_001/SAMPLE_001.cram
+  --image quay.io/biocontainers/xtea:0.1.9--hdfd78af_0 \
+  --worker-script gs://<YOUR_BUCKET>/scripts/xtea_worker.py \
+  --env CRAM_PATH=gs://<YOUR_BUCKET>/input/SAMPLE_001/SAMPLE_001.cram \
+  --env REPEAT_TYPE=Alu
+
+
 ```
 
 This script:
@@ -255,13 +259,13 @@ This script:
 for sample in $(cat sample_list.txt); do
   python scripts/submit_batch_job.py \
     --sample-id "$sample" \
-    --repeat-type Alu &
+    --image quay.io/biocontainers/xtea:0.1.9--hdfd78af_0 \
+    --worker-script gs://<YOUR_BUCKET>/scripts/xtea_worker.py \
+    --env CRAM_PATH=gs://<YOUR_BUCKET>/input/${sample}/${sample}.cram &
   sleep 2  # stagger submissions
 done
 wait
 ```
-
-This submits 50+ jobs in parallel. Batch will schedule them as resources become available.
 
 ---
 
@@ -295,20 +299,20 @@ Worker script uploads logs every 10 min. Find them:
 
 ```bash
 # List checkpoint logs
-gsutil ls gs://<YOUR_BUCKET>/logs/xtea_SAMPLE_001_Alu_*.txt | sort
+gsutil ls gs://<YOUR_BUCKET>/logs/worker_SAMPLE_001_*.txt | sort
 
 # View latest
-gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/xtea_SAMPLE_001_Alu_*.txt | tail -1)
+gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/worker_*.txt | tail -1)
 
 # Tail last 50 lines
-gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/xtea_SAMPLE_001_Alu_*.txt | tail -1) | tail -50
+gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/worker_*.txt | tail -1) | tail -50
 ```
 
 ### Debug a stuck job
 
 1. Get the latest log checkpoint:
    ```bash
-   gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/xtea_SAMPLE_001_Alu_*.txt | tail -1)
+  gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/worker_*.txt | tail -1)
    ```
 
 2. Look for the last completed step (should show time/progress)
@@ -334,28 +338,8 @@ gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/xtea_SAMPLE_001_Alu_*.txt | tail 
    # Poke around in /tmp/work/
    ```
 
-### Check outputs
-
-```bash
-# List outputs for a sample
-gsutil ls gs://<YOUR_BUCKET>/xtea_output/SAMPLE_001/Alu/
-
-# Download a specific VCF
-gsutil cp gs://<YOUR_BUCKET>/xtea_output/SAMPLE_001/Alu/*.vcf local_file.vcf
-```
-
 ---
 
-## Managing Costs
-
-### Cost drivers
-
-| Item | Cost | Mitigation |
-|------|------|-----------|
-| **VM compute (e2-highmem-16)** | ~$0.54/h | Use only when needed; batch jobs, not interactive |
-| **Storage (at rest)** | $0.02/GiB/month | Delete old outputs; keep only VCF + metadata |
-| **Egress (out of GCP)** | $0.12/GiB | Use requester-pays buckets; stay inside GCP for transfers |
-| **Requester-pays buckets** | ~$0.004/GiB read | Negotiate at the source (e.g., GP2 may absorb cost) |
 
 ### Strategies
 
@@ -372,108 +356,6 @@ gsutil cp gs://<YOUR_BUCKET>/xtea_output/SAMPLE_001/Alu/*.vcf local_file.vcf
    ```
 
 5. **Set up alerts:** Cloud Monitoring can email you if hourly compute cost exceeds a threshold.
-
----
-
-## Common Patterns
-
-### Pattern 1: Parallel submission with different inputs
-
-```bash
-# Submit 100 jobs, each with a different CRAM
-for sample in $(cat samples.txt | head -100); do
-  python scripts/submit_batch_job.py \
-    --sample-id "$sample" \
-    --cram-path "gs://<YOUR_BUCKET>/input/${sample}/${sample}.cram" \
-    --repeat-type Alu &
-  
-  # Stagger to avoid quota exhaustion
-  sleep 1
-done
-wait
-
-echo "Submitted 100 jobs. Monitor with: gcloud batch jobs list --project=<YOUR_PROJECT_ID>"
-```
-
-### Pattern 2: Retry failed jobs
-
-```bash
-# List samples with no output VCF
-gsutil ls gs://<YOUR_BUCKET>/xtea_output/*/Alu/*.vcf | \
-  cut -d/ -f6 | sort -u > done_samples.txt
-
-# Compare with all samples
-comm -23 <(sort all_samples.txt) done_samples.txt > failed_samples.txt
-
-# Resubmit
-for sample in $(cat failed_samples.txt); do
-  python scripts/submit_batch_job.py \
-    --sample-id "$sample" \
-    --repeat-type Alu &
-done
-wait
-```
-
-### Pattern 3: Chain jobs (output of one is input to next)
-
-```bash
-# Example: align → call → filter
-
-# 1. Submit alignment jobs, capture job IDs
-for sample in $(cat samples.txt); do
-  gcloud batch jobs submit "align-$sample" \
-    --config=align_config.json \
-    --project=<YOUR_PROJECT_ID> \
-    --async
-done
-
-# 2. Wait for all align jobs to finish
-# (polling every 5 min)
-while true; do
-  pending=$(gcloud batch jobs list --filter="name:align-* AND status.state:RUNNING OR status.state:QUEUED" --format="value(name)" | wc -l)
-  if [ "$pending" -eq 0 ]; then break; fi
-  echo "$(date): $pending jobs still running"
-  sleep 300
-done
-
-# 3. Submit calling jobs
-for sample in $(cat samples.txt); do
-  python scripts/submit_batch_job.py --sample-id "$sample" --repeat-type Alu &
-done
-```
-
-### Pattern 4: Dynamic config based on sample metadata
-
-```python
-# In Python (Workbench)
-import json
-import pandas as pd
-
-# Load sample metadata
-metadata = pd.read_csv("sample_metadata.csv")  # cols: sample_id, cram_path, organism, depth
-
-for _, row in metadata.iterrows():
-    config = {
-        "taskGroups": [{
-            "taskSpec": {
-                "environment": {
-                    "variables": {
-                        "SAMPLE_ID": row["sample_id"],
-                        "CRAM_PATH": row["cram_path"],
-                        "ORGANISM": row["organism"],
-                        # Adjust memory based on sequencing depth
-                        "MEMORY_MB": 122880 if row["depth"] > 50 else 65536
-                    }
-                },
-                # ... rest of config
-            }
-        }]
-    }
-    
-    # Save and submit
-    with open(f"config_{row['sample_id']}.json", "w") as f:
-        json.dump(config, f)
-```
 
 ---
 
