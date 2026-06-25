@@ -12,12 +12,12 @@
 set -euo pipefail
 
 # ---- fill these in -----------------------------------------------------------
-PROJECT="wb-lukewarm-blueberry-5144"                 # your Workbench GCP project
+PROJECT="wb-nice-fruitsalad-1234"                 # your Workbench GCP project
 REGION="europe-west4"                                # your workspace region
 SA="pet-XXXX@${PROJECT}.iam.gserviceaccount.com"     # your pet service account
-BUCKET="test-bucket-wb-lukewarm-blueberry-5144"      # a bucket you can write to
-CRAM="gs://gp2_crams/WGS/BBDP_000002/BBDP_000002.cram"  # the input CRAM
-SAMPLE_ID="BBDP_000002"
+BUCKET="test-bucket-wb-nice-fruitsalad-1234"      # a bucket you can write to
+CRAM="gs://gp2_crams/WGS/<SAMPLE_ID>/<SAMPLE_ID>.cram"  # the input CRAM
+SAMPLE_ID="<SAMPLE_ID>"
 # -----------------------------------------------------------------------------
 
 # dsub turns each --input/--output into an environment variable inside the
