@@ -74,12 +74,12 @@ gcloud auth list
                        │ worker script
                        │
 ┌──────────────────────▼──────────────────────────────────────────┐
-│ Container (e.g., quay.io/biocontainers/xtea:0.1.9)              │
+│ Container (e.g., quay.io/biocontainers/samtools:1.19.2)         │
 │                                                                 │
 │  1. Authenticate via metadata server                            │
-│  2. Download reference files from GCS                           │
+│  2. Download reference files from GCS (if needed)               │
 │  3. Download input data (CRAM, etc)                             │
-│  4. Run your tool (xTea, GATK, bcftools, etc)                   │
+│  4. Run your tool (samtools, GATK, bcftools, etc)              │
 │  5. Upload outputs back to GCS                                  │
 │  6. Upload logs (checkpointed every 10 min)                     │
 └──────────────────────┬──────────────────────────────────────────┘
@@ -91,7 +91,7 @@ gcloud auth list
 │                                                                 │
 │  ├─ ref/                   (input: reference files)             │
 │  ├─ input/                 (input: CRAMs, BAMs)                 │
-│  ├─ xtea_output/           (output: VCFs, intermediates)        │
+│  ├─ output/                (output: stats reports, VCFs, etc)   │
 │  └─ logs/                  (checkpoints during execution)       │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -126,30 +126,31 @@ sample_id = "SAMPLE_001"
 # Ensure reference files are in GCS
 subprocess.run(f"gsutil ls {bucket}/ref/", shell=True)
 
-# Ensure input CRAM is in GCS
+# Ensure input CRAM is in GCS (the .crai index is optional:
+# the samtools example will use it for idxstats if present, and skip it if not)
 cram_path = f"{bucket}/input/{sample_id}/{sample_id}.cram"
-crai_path = f"{cram_path}.crai"
-subprocess.run(f"gsutil ls {cram_path} {crai_path}", shell=True)
+subprocess.run(f"gsutil ls {cram_path}", shell=True)
+subprocess.run(f"gsutil ls {cram_path}.crai", shell=True)  # optional
 ```
 
-### Step 2: Prepare tool setup (one-time)
+### Step 2: Prepare tool setup (one-time, only if your tool needs it)
 
-If your tool requires a setup phase (like xTea does), do it once in Workbench and sync to GCS:
+The built-in samtools example needs **no** setup phase: you only need a CRAM in
+GCS (and optionally a reference FASTA). Skip ahead to Step 3.
+
+Some heavier tools (like xTea) do require a one-time setup phase that generates
+a working folder. If that's your case, run it once in Workbench and sync the
+result to GCS so every Batch job can reuse it:
 
 ```bash
-# Example for xTea (pseudo-code)
+# Example (pseudo-code) for a tool with a setup phase
 cd /home/jupyter/workspace/ws_files
 
-# Run setup locally
-python xTea/bin/xtea \
-  -i sample_list.txt \
-  -b bam_list.txt \
-  ... (other flags) \
-  -p path_work_folder/
+# Run the tool's setup locally
+<your-tool> setup ... -p path_work_folder/
 
 # Sync to bucket
 gsutil -m cp -r path_work_folder/ gs://<YOUR_BUCKET>/path_work_folder/
-gsutil -m cp -r xTea/ gs://<YOUR_BUCKET>/xTea/
 gsutil -m cp -r ref/ gs://<YOUR_BUCKET>/ref/
 ```
 
@@ -163,7 +164,7 @@ Copy `examples/job_config_template.json` and customize:
     "taskSpec": {
       "runnables": [{
         "container": {
-          "imageUri": "quay.io/biocontainers/xtea:0.1.9--hdfd78af_0",
+          "imageUri": "quay.io/biocontainers/samtools:1.19.2--h50ea8bc_0",
           "entrypoint": "/bin/bash",
           "commands": [
             "-c",
@@ -174,7 +175,6 @@ Copy `examples/job_config_template.json` and customize:
       "environment": {
         "variables": {
           "SAMPLE_ID": "SAMPLE_001",
-          "REPEAT_TYPE": "Alu",
           "CRAM_PATH": "gs://<YOUR_BUCKET>/input/SAMPLE_001/SAMPLE_001.cram",
           "GOOGLE_CLOUD_PROJECT": "<YOUR_PROJECT_ID>"
         }
@@ -238,12 +238,9 @@ python scripts/submit_batch_job.py \
   --project <YOUR_PROJECT_ID> \
   --region <YOUR_REGION> \
   --sample-id SAMPLE_001 \
-  --image quay.io/biocontainers/xtea:0.1.9--hdfd78af_0 \
-  --worker-script gs://<YOUR_BUCKET>/scripts/xtea_worker.py \
-  --env CRAM_PATH=gs://<YOUR_BUCKET>/input/SAMPLE_001/SAMPLE_001.cram \
-  --env REPEAT_TYPE=Alu
-
-
+  --image quay.io/biocontainers/samtools:1.19.2--h50ea8bc_0 \
+  --worker-script gs://<YOUR_BUCKET>/scripts/worker.py \
+  --env CRAM_PATH=gs://<YOUR_BUCKET>/input/SAMPLE_001/SAMPLE_001.cram
 ```
 
 This script:
@@ -258,9 +255,11 @@ This script:
 # For each sample in a list
 for sample in $(cat sample_list.txt); do
   python scripts/submit_batch_job.py \
+    --project <YOUR_PROJECT_ID> \
+    --region <YOUR_REGION> \
     --sample-id "$sample" \
-    --image quay.io/biocontainers/xtea:0.1.9--hdfd78af_0 \
-    --worker-script gs://<YOUR_BUCKET>/scripts/xtea_worker.py \
+    --image quay.io/biocontainers/samtools:1.19.2--h50ea8bc_0 \
+    --worker-script gs://<YOUR_BUCKET>/scripts/worker.py \
     --env CRAM_PATH=gs://<YOUR_BUCKET>/input/${sample}/${sample}.cram &
   sleep 2  # stagger submissions
 done
@@ -343,9 +342,15 @@ gsutil cat $(gsutil ls gs://<YOUR_BUCKET>/logs/worker_*.txt | tail -1) | tail -5
 
 ### Strategies
 
-1. **Consolidate TE types:** instead of 4 jobs per sample (Alu, L1, SVA, HERV separately), run them together with `-y 15` (if RAM allows). 70 samples × 4 types = 280 jobs → 70 jobs.
+1. **Consolidate work per sample:** if your tool would otherwise run as several
+   separate jobs per sample (for example one job per analysis type), see whether
+   it can do them in a single invocation. Fewer jobs means fewer repeated input
+   downloads and less scheduling overhead. E.g. 70 samples × 4 types = 280 jobs
+   can often become 70 jobs.
 
-2. **Clean up outputs aggressively:** keep `.vcf` and metadata, delete intermediate `.bam`, `.sam`, raw alignments. Saves ~80% of storage.
+2. **Clean up outputs aggressively:** keep the result files and metadata you
+   actually need, delete bulky intermediates (raw alignments, temp `.bam`/`.sam`).
+   Often saves the large majority of storage.
 
 3. **Use spot VMs (experimental):** `e2-spot` saves ~70% on compute but can be preempted. Not recommended for long-running jobs, but OK if your tool checkpoints.
 
@@ -368,7 +373,7 @@ A: Use `quay.io` (BioContainers), `gcr.io`, or other registries not blocked by V
 A: You're inside a private VPC. Remove `noExternalIpAddress: false` and ensure your network/subnet allow internal GCS access. Check that service account has `roles/storage.objectViewer`.
 
 **Q: Job shows SUCCEEDED but no output**
-A: Your worker script exited with code 0 even when the tool failed. Fix: add a final check like `if [ ! -f output.vcf ]; then exit 1; fi` before exiting successfully.
+A: Your worker script exited with code 0 even when the tool failed. Fix: add a final check that the expected output file exists and is non-empty before exiting successfully (e.g. `if [ ! -s "$OUTPUT" ]; then exit 1; fi`). The provided `worker_template.py` already does this.
 
 **Q: "Disk quota exceeded"**
 A: 200 GB boot disk is too small for your inputs. Try 500 GB or consolidate jobs so you don't run in parallel. Or delete intermediates during job (clean up `/tmp` in worker).
@@ -390,4 +395,3 @@ For more, see **TROUBLESHOOTING.md**.
 3. Expand to batch submission once confident
 4. Monitor costs and adjust VM size / time limits as needed
 5. Share back improvements to the team!
-
